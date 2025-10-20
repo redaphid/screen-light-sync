@@ -1,0 +1,27 @@
+{
+  "name": "screen-light-sync",
+  "version": "1.0.0",
+  "description": "Real-time screen-scraping light synchronization for Philips Hue and Nanoleaf",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "watch": "tsc -w",
+    "test-hue": "ts-node src/test-hue.ts"
+  },
+  "keywords": ["hue", "nanoleaf", "screen-sync", "ambilight"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "screenshot-desktop": "^1.15.0",
+    "sharp": "^0.33.0",
+    "node-hue-api": "^4.0.0",
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
