@@ -77,6 +77,7 @@ async function runSetupWizard(configManager: ConfigManager): Promise<void> {
         bridgeIp,
         username,
         lightIds: [], // Empty means use all lights
+        entertainmentAreaId: null,
       };
 
       console.log('✓ Hue setup complete!');

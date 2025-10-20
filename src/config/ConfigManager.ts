@@ -3,22 +3,26 @@ import * as path from 'path';
 import { ScreenZone } from '../color/ColorExtractor';
 
 export interface AppConfig {
-  hue?: {
-    bridgeIp?: string;
-    username?: string;
-    lightIds?: number[];
+  hue: {
+    bridgeIp: string;
+    username: string;
+    lightIds: number[];
+    entertainmentAreaId: number | null;
   };
-  nanoleaf?: {
-    ip?: string;
-    authToken?: string;
+  nanoleaf: {
+    ip: string;
+    authToken: string;
   };
-  sync?: {
-    fps?: number;
-    brightness?: number;
-    colorBoost?: number;
-    zones?: ScreenZone[];
-    enableHue?: boolean;
-    enableNanoleaf?: boolean;
+  sync: {
+    fps: number;
+    brightness: number;
+    colorBoost: number;
+    zones: ScreenZone[];
+    enableHue: boolean;
+    enableNanoleaf: boolean;
+    useAdvancedColorDetection: boolean;
+    hueEntertainmentAreaId: number | null;
+    hueRegularLightIds: number[];
   };
 }
 
@@ -27,10 +31,11 @@ export interface AppConfig {
  */
 export class ConfigManager {
   private configPath: string;
-  private config: AppConfig = {};
+  private config: AppConfig;
 
   constructor(configPath: string = './config.json') {
     this.configPath = path.resolve(configPath);
+    this.config = ConfigManager.createDefaultConfig();
   }
 
   /**
@@ -39,13 +44,15 @@ export class ConfigManager {
   async load(): Promise<AppConfig> {
     try {
       const data = await fs.readFile(this.configPath, 'utf-8');
-      this.config = JSON.parse(data);
+      const loadedConfig = JSON.parse(data);
+      // Merge with defaults to ensure all required fields exist
+      this.config = this.mergeDeep(ConfigManager.createDefaultConfig(), loadedConfig);
       console.log(`✓ Configuration loaded from ${this.configPath}`);
       return this.config;
     } catch (error: any) {
       if (error.code === 'ENOENT') {
-        console.log('ℹ No configuration file found, starting fresh');
-        this.config = {};
+        console.log('ℹ No configuration file found, starting with defaults');
+        this.config = ConfigManager.createDefaultConfig();
         return this.config;
       }
       console.error('Error loading configuration:', error.message);
@@ -118,21 +125,25 @@ export class ConfigManager {
   static createDefaultConfig(): AppConfig {
     return {
       hue: {
-        bridgeIp: undefined,
-        username: undefined,
+        bridgeIp: '',
+        username: '',
         lightIds: [],
+        entertainmentAreaId: null,
       },
       nanoleaf: {
-        ip: undefined,
-        authToken: undefined,
+        ip: '',
+        authToken: '',
       },
       sync: {
-        fps: 10,
+        fps: 15,
         brightness: 255,
         colorBoost: 1.2,
-        enableHue: true,
-        enableNanoleaf: true,
+        enableHue: false,
+        enableNanoleaf: false,
         zones: [],
+        useAdvancedColorDetection: true,
+        hueEntertainmentAreaId: null,
+        hueRegularLightIds: [],
       },
     };
   }

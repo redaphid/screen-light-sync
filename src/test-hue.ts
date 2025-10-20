@@ -79,6 +79,7 @@ async function testHue() {
           bridgeIp,
           username,
           lightIds: [],
+          entertainmentAreaId: null,
         },
       });
 

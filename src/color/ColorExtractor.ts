@@ -19,6 +19,14 @@ export interface ZoneColor {
   color: RGBColor;
 }
 
+export interface ColorHistogram {
+  [key: string]: number; // hex color -> count
+}
+
+export interface DominantColor extends RGBColor {
+  weight: number; // Importance score
+}
+
 /**
  * Extracts colors from screen captures for light synchronization
  */
