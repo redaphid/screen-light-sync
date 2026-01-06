@@ -211,7 +211,16 @@ async function main() {
   }
 
   // Create sync engine
-  const syncEngine = new SyncEngine(hueController, nanoleafController, config.sync);
+  const syncEngine = new SyncEngine(hueController, nanoleafController, config.sync)
+
+  // Initialize UDP streaming for Nanoleaf (much faster than REST)
+  if (config.sync?.enableNanoleaf && config.nanoleaf?.ip && config.nanoleaf?.authToken) {
+    try {
+      await syncEngine.initNanoleafStreaming(config.nanoleaf.ip, config.nanoleaf.authToken)
+    } catch (err: any) {
+      console.log(`  ⚠ UDP streaming failed, falling back to REST: ${err.message}`)
+    }
+  }
 
   // Handle exit gracefully
   process.on('SIGINT', async () => {

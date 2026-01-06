@@ -1,16 +1,16 @@
-import { ScreenCapture } from '../capture/ScreenCapture';
-import { ColorExtractor, RGBColor, ScreenZone } from '../color/ColorExtractor';
-import { HueController } from '../hue/HueController';
-import { NanoleafController } from '../nanoleaf/NanoleafController';
+import { FastColorSampler, RGBColor } from '../capture/FastColorSampler'
+import { HueController } from '../hue/HueController'
+import { NanoleafController } from '../nanoleaf/NanoleafController'
+import { NanoleafStreamingController } from '../nanoleaf/NanoleafStreamingController'
 
 export interface SyncConfig {
-  fps?: number;                    // Frames per second (default: 10)
-  brightness?: number;              // Global brightness 0-255 (default: 255)
-  colorBoost?: number;              // Saturation boost multiplier (default: 1.2)
-  zones?: ScreenZone[];             // Screen zones for multi-light setups
-  hueLightIds?: number[];           // Specific Hue lights to control
-  enableHue?: boolean;              // Enable Hue lights (default: true)
-  enableNanoleaf?: boolean;         // Enable Nanoleaf (default: true)
+  fps?: number
+  brightness?: number
+  colorBoost?: number
+  hueLightIds?: number[]
+  enableHue?: boolean
+  enableNanoleaf?: boolean
+  sampleStep?: number  // Sample every Nth pixel (default: 10)
 }
 
 export interface SyncStats {
@@ -22,49 +22,54 @@ export interface SyncStats {
 }
 
 /**
- * Main synchronization engine that coordinates screen capture and light updates
+ * Main synchronization engine using FastColorSampler for low-latency capture
  */
 export class SyncEngine {
-  private screenCapture: ScreenCapture;
-  private colorExtractor: ColorExtractor;
-  private hueController?: HueController;
-  private nanoleafController?: NanoleafController;
+  private sampler: FastColorSampler
+  private hueController?: HueController
+  private nanoleafController?: NanoleafController
+  private nanoleafStreaming?: NanoleafStreamingController
 
-  private isRunning = false;
-  private syncInterval?: NodeJS.Timeout;
-  private config: Required<SyncConfig>;
+  private isRunning = false
+  private syncInterval?: NodeJS.Timeout
+  private config: Required<SyncConfig>
 
-  // Performance tracking
-  private lastFrameTime = 0;
-  private frameCount = 0;
+  private lastFrameTime = 0
+  private frameCount = 0
   private stats: SyncStats = {
     fps: 0,
     captureTime: 0,
     colorExtractionTime: 0,
     lightUpdateTime: 0,
     totalFrameTime: 0,
-  };
+  }
 
   constructor(
     hueController?: HueController,
     nanoleafController?: NanoleafController,
     config: SyncConfig = {}
   ) {
-    this.screenCapture = new ScreenCapture();
-    this.colorExtractor = new ColorExtractor();
-    this.hueController = hueController;
-    this.nanoleafController = nanoleafController;
+    const sampleStep = config.sampleStep || 10
+    this.sampler = new FastColorSampler(sampleStep)
+    this.hueController = hueController
+    this.nanoleafController = nanoleafController
 
-    // Set defaults
     this.config = {
       fps: config.fps || 10,
       brightness: config.brightness || 255,
       colorBoost: config.colorBoost || 1.2,
-      zones: config.zones || [],
       hueLightIds: config.hueLightIds || [],
       enableHue: config.enableHue !== false,
       enableNanoleaf: config.enableNanoleaf !== false,
-    };
+      sampleStep,
+    }
+  }
+
+  async initNanoleafStreaming(ip: string, authToken: string): Promise<void> {
+    console.log(`  Initializing UDP streaming for ${ip}...`)
+    this.nanoleafStreaming = new NanoleafStreamingController(ip, authToken)
+    await this.nanoleafStreaming.initialize()
+    console.log(`  ✓ UDP streaming ready`)
   }
 
   /**
@@ -133,48 +138,29 @@ export class SyncEngine {
     this.isRunning = false;
   }
 
-  /**
-   * Synchronize one frame
-   */
   private async syncFrame(): Promise<void> {
-    const frameStart = Date.now();
+    const frameStart = Date.now()
 
     try {
-      // 1. Capture screen
-      const captureStart = Date.now();
-      const screenshot = await this.screenCapture.capture({ format: 'jpg' });
-      const captureTime = Date.now() - captureStart;
+      // 1. Capture + extract color in one step (no JPEG encoding!)
+      const captureStart = Date.now()
+      let color = this.sampler.getAverageColor()
+      const captureTime = Date.now() - captureStart
 
-      // 2. Extract color
-      const colorStart = Date.now();
-      let color: RGBColor;
-
-      if (this.config.zones.length > 0) {
-        // Multi-zone mode: Use first zone for now
-        // TODO: Implement per-light zone mapping
-        const zoneColors = await this.colorExtractor.getZoneColors(screenshot, this.config.zones);
-        color = zoneColors[0]?.color || { r: 0, g: 0, b: 0 };
-      } else {
-        // Full screen average
-        color = await this.colorExtractor.getAverageColor(screenshot);
-      }
-
-      // Enhance the color
-      color = this.colorExtractor.enhanceColor(color, this.config.colorBoost);
-
-      const colorTime = Date.now() - colorStart;
+      // 2. Enhance color
+      const colorStart = Date.now()
+      color = this.sampler.enhanceColor(color, this.config.colorBoost)
+      const colorTime = Date.now() - colorStart
 
       // 3. Update lights
-      const lightStart = Date.now();
-      await this.updateLights(color);
-      const lightTime = Date.now() - lightStart;
+      const lightStart = Date.now()
+      await this.updateLights(color)
+      const lightTime = Date.now() - lightStart
 
-      // Update stats
-      const totalTime = Date.now() - frameStart;
-      this.updateStats(captureTime, colorTime, lightTime, totalTime);
-
+      const totalTime = Date.now() - frameStart
+      this.updateStats(captureTime, colorTime, lightTime, totalTime)
     } catch (error: any) {
-      console.error('Error in sync frame:', error.message);
+      console.error('Error in sync frame:', error.message)
     }
   }
 
@@ -208,12 +194,17 @@ export class SyncEngine {
       }
     }
 
-    // Update Nanoleaf
-    if (this.config.enableNanoleaf && this.nanoleafController) {
-      promises.push(this.nanoleafController.setSolidColor(color));
+    // Update Nanoleaf - prefer UDP streaming over REST
+    if (this.config.enableNanoleaf) {
+      if (this.nanoleafStreaming?.isStreaming()) {
+        // Fire-and-forget UDP - no await needed
+        this.nanoleafStreaming.streamSolidColor(color)
+      } else if (this.nanoleafController) {
+        promises.push(this.nanoleafController.setSolidColor(color))
+      }
     }
 
-    await Promise.all(promises);
+    if (promises.length > 0) await Promise.all(promises)
   }
 
   /**
