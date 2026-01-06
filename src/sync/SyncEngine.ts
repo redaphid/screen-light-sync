@@ -1,5 +1,6 @@
 import { FastColorSampler, RGBColor } from '../capture/FastColorSampler'
 import { HueController } from '../hue/HueController'
+import { HueStreamingController } from '../hue/HueStreamingController'
 import { NanoleafController } from '../nanoleaf/NanoleafController'
 import { NanoleafStreamingController } from '../nanoleaf/NanoleafStreamingController'
 
@@ -27,8 +28,9 @@ export interface SyncStats {
 export class SyncEngine {
   private sampler: FastColorSampler
   private hueController?: HueController
+  private hueStreaming?: HueStreamingController
   private nanoleafController?: NanoleafController
-  private nanoleafStreaming?: NanoleafStreamingController
+  private nanoleafStreamers: NanoleafStreamingController[] = []
 
   private isRunning = false
   private syncInterval?: NodeJS.Timeout
@@ -66,10 +68,19 @@ export class SyncEngine {
   }
 
   async initNanoleafStreaming(ip: string, authToken: string): Promise<void> {
-    console.log(`  Initializing UDP streaming for ${ip}...`)
-    this.nanoleafStreaming = new NanoleafStreamingController(ip, authToken)
-    await this.nanoleafStreaming.initialize()
-    console.log(`  ✓ UDP streaming ready`)
+    const streamer = new NanoleafStreamingController(ip, authToken)
+    await streamer.initialize()
+    this.nanoleafStreamers.push(streamer)
+  }
+
+  async initHueStreaming(bridgeIp: string, username: string, clientKey: string, groupId?: string): Promise<void> {
+    this.hueStreaming = new HueStreamingController({
+      bridgeIp,
+      username,
+      clientKey,
+      entertainmentGroupId: groupId,
+    })
+    await this.hueStreaming.initialize()
   }
 
   /**
@@ -170,35 +181,36 @@ export class SyncEngine {
   private async updateLights(color: RGBColor): Promise<void> {
     const promises: Promise<any>[] = [];
 
-    // Update Hue lights
-    if (this.config.enableHue && this.hueController) {
-      if (this.config.hueLightIds.length > 0) {
-        // Update specific lights
-        const lightColors = new Map<number, RGBColor>();
-        for (const lightId of this.config.hueLightIds) {
-          lightColors.set(lightId, color);
+    // Update Hue lights - prefer DTLS streaming over REST
+    if (this.config.enableHue) {
+      if (this.hueStreaming?.isStreaming()) {
+        this.hueStreaming.streamSolidColor(color)
+      } else if (this.hueController) {
+        if (this.config.hueLightIds.length > 0) {
+          const lightColors = new Map<number, RGBColor>()
+          for (const lightId of this.config.hueLightIds) {
+            lightColors.set(lightId, color)
+          }
+          promises.push(this.hueController.setMultipleLights(lightColors, this.config.brightness))
+        } else {
+          const lights = await this.hueController.getLights()
+          const lightColors = new Map<number, RGBColor>()
+          for (const light of lights) {
+            lightColors.set(light.id, color)
+          }
+          promises.push(this.hueController.setMultipleLights(lightColors, this.config.brightness))
         }
-        promises.push(
-          this.hueController.setMultipleLights(lightColors, this.config.brightness)
-        );
-      } else {
-        // Update all lights
-        const lights = await this.hueController.getLights();
-        const lightColors = new Map<number, RGBColor>();
-        for (const light of lights) {
-          lightColors.set(light.id, color);
-        }
-        promises.push(
-          this.hueController.setMultipleLights(lightColors, this.config.brightness)
-        );
       }
     }
 
     // Update Nanoleaf - prefer UDP streaming over REST
     if (this.config.enableNanoleaf) {
-      if (this.nanoleafStreaming?.isStreaming()) {
-        // Fire-and-forget UDP - no await needed
-        this.nanoleafStreaming.streamSolidColor(color)
+      if (this.nanoleafStreamers.length > 0) {
+        for (const streamer of this.nanoleafStreamers) {
+          if (streamer.isStreaming()) {
+            streamer.streamSolidColor(color)
+          }
+        }
       } else if (this.nanoleafController) {
         promises.push(this.nanoleafController.setSolidColor(color))
       }

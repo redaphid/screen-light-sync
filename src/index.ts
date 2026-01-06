@@ -75,11 +75,12 @@ async function runSetupWizard(configManager: ConfigManager): Promise<void> {
       }
 
       try {
-        const username = await hueController.createUser(bridgeIp, askContinueRetry)
+        const { username, clientKey } = await hueController.createUser(bridgeIp, askContinueRetry)
 
         config.hue = {
           bridgeIp,
           username,
+          clientKey,
           lightIds: [],
           entertainmentAreaId: null,
         }
@@ -181,19 +182,18 @@ async function main() {
   let nanoleafController: NanoleafController | undefined;
 
   if (config.sync?.enableHue && config.hue?.bridgeIp && config.hue?.username) {
-    console.log('\n🔵 Initializing Philips Hue...');
+    console.log('\n🔵 Initializing Philips Hue...')
     hueController = new HueController({
       bridgeIp: config.hue.bridgeIp,
       username: config.hue.username,
-    });
-    await hueController.connect();
+    })
+    await hueController.connect()
 
-    // List lights
-    const lights = await hueController.getLights();
-    console.log(`   Found ${lights.length} light(s):`);
+    const lights = await hueController.getLights()
+    console.log(`   Found ${lights.length} light(s):`)
     lights.forEach(light => {
-      console.log(`   - ${light.name} (ID: ${light.id})`);
-    });
+      console.log(`   - ${light.name} (ID: ${light.id})`)
+    })
   }
 
   if (config.sync?.enableNanoleaf && config.nanoleaf?.ip && config.nanoleaf?.authToken) {
@@ -210,16 +210,33 @@ async function main() {
     process.exit(0);
   }
 
-  // Create sync engine
   const syncEngine = new SyncEngine(hueController, nanoleafController, config.sync)
 
-  // Initialize UDP streaming for Nanoleaf (much faster than REST)
-  if (config.sync?.enableNanoleaf && config.nanoleaf?.ip && config.nanoleaf?.authToken) {
+  if (config.sync?.enableHue && config.hue?.bridgeIp && config.hue?.username && config.hue?.clientKey) {
     try {
-      await syncEngine.initNanoleafStreaming(config.nanoleaf.ip, config.nanoleaf.authToken)
+      console.log(`  Initializing Hue DTLS streaming...`)
+      await syncEngine.initHueStreaming(
+        config.hue.bridgeIp,
+        config.hue.username,
+        config.hue.clientKey,
+        String(config.sync?.hueEntertainmentAreaId || config.hue.entertainmentAreaId || "") || undefined,
+      )
     } catch (err: any) {
-      console.log(`  ⚠ UDP streaming failed, falling back to REST: ${err.message}`)
+      console.log(`  ⚠ Hue streaming failed, using REST: ${err.message}`)
     }
+  }
+
+  if (config.sync?.enableNanoleaf) {
+    const devices = config.nanoleafDevices || (config.nanoleaf ? [config.nanoleaf] : [])
+    console.log(`  Initializing UDP streaming for ${devices.length} device(s)...`)
+    for (const device of devices) {
+      try {
+        await syncEngine.initNanoleafStreaming(device.ip, device.authToken)
+      } catch (err: any) {
+        console.log(`  ⚠ UDP streaming failed for ${device.ip}: ${err.message}`)
+      }
+    }
+    console.log(`  ✓ UDP streaming ready`)
   }
 
   // Handle exit gracefully

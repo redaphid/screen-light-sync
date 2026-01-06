@@ -11,8 +11,9 @@ export interface AppConfig {
   hue: {
     bridgeIp: string
     username: string
+    clientKey?: string
     lightIds: number[]
-    entertainmentAreaId: number | null
+    entertainmentAreaId?: string | null
   }
   nanoleaf: NanoleafDevice
   nanoleafDevices?: NanoleafDevice[]

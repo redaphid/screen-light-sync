@@ -55,7 +55,7 @@ export class HueController {
     }
   }
 
-  async createUser(bridgeIp: string, askContinue?: () => Promise<boolean>): Promise<string> {
+  async createUser(bridgeIp: string, askContinue?: () => Promise<boolean>): Promise<{ username: string, clientKey: string }> {
     const maxAttempts = 5
     const waitSeconds = 30
 
@@ -80,9 +80,9 @@ export class HueController {
           this.deviceName
         )
 
-        const username = createdUser.username
-        console.log(`✓ User created successfully: ${username}`)
-        return username
+        console.log(`✓ User created: ${createdUser.username}`)
+        console.log(`✓ Entertainment key: ${createdUser.clientkey}`)
+        return { username: createdUser.username, clientKey: createdUser.clientkey }
       } catch (error: any) {
         console.log(`✗ Attempt ${attempt} failed: ${error.message}`)
 

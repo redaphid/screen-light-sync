@@ -13,13 +13,8 @@ export interface PanelInfo {
   y: number
 }
 
-/**
- * Nanoleaf controller using UDP External Control protocol
- * Much faster than REST API - supports 10-20 FPS streaming
- *
- * Protocol: UDP datagrams to port 60222
- * Format: nPanels [panelId nFrames R G B W transitionTime]...
- */
+type ProtocolVersion = "v1" | "v2"
+
 export class NanoleafStreamingController {
   private ip: string
   private authToken: string
@@ -28,138 +23,150 @@ export class NanoleafStreamingController {
   private socket: dgram.Socket | null = null
   private panels: PanelInfo[] = []
   private streamEnabled = false
+  private protocolVersion: ProtocolVersion = "v2"
+  private deviceName = ""
 
   constructor(ip: string, authToken: string) {
     this.ip = ip
     this.authToken = authToken
   }
 
-  /**
-   * Initialize: get panel layout and enable external control mode
-   */
-  async initialize(): Promise<void> {
+  initialize = async () => {
+    await this.getDeviceInfo()
     await this.getPanelLayout()
     await this.enableExternalControl()
     this.createSocket()
   }
 
-  /**
-   * Get panel layout from device
-   */
-  private async getPanelLayout(): Promise<void> {
+  private getDeviceInfo = async () => {
+    const url = `http://${this.ip}:${this.port}/api/v1/${this.authToken}`
+    const response = await axios.get(url)
+    this.deviceName = response.data.name || "Unknown"
+    const model = response.data.model || ""
+
+    if (model === "NL22") {
+      this.protocolVersion = "v1"
+      this.streamPort = 60221
+      return
+    }
+
+    this.protocolVersion = "v2"
+    this.streamPort = 60222
+  }
+
+  private getPanelLayout = async () => {
     const url = `http://${this.ip}:${this.port}/api/v1/${this.authToken}/panelLayout/layout`
     const response = await axios.get(url)
-    const layout = response.data
 
-    this.panels = layout.positionData
-      .filter((p: any) => p.shapeType !== 12) // Filter out controller
+    this.panels = response.data.positionData
+      .filter((p: any) => p.shapeType !== 12)
       .map((p: any) => ({
         panelId: p.panelId,
         x: p.x,
         y: p.y,
       }))
 
-    console.log(`  Found ${this.panels.length} panels for streaming`)
+    console.log(`  ${this.deviceName}: ${this.panels.length} panels (${this.protocolVersion})`)
   }
 
-  /**
-   * Enable external control mode (required before UDP streaming)
-   */
-  private async enableExternalControl(): Promise<void> {
+  private enableExternalControl = async () => {
     const url = `http://${this.ip}:${this.port}/api/v1/${this.authToken}/effects`
-    await axios.put(url, {
-      write: {
-        command: "display",
-        animType: "extControl",
-        extControlVersion: "v2",
-      },
-    })
+
+    const tryVersion = async (version: ProtocolVersion) => {
+      await axios.put(url, {
+        write: {
+          command: "display",
+          animType: "extControl",
+          extControlVersion: version,
+        },
+      })
+    }
+
+    try {
+      await tryVersion(this.protocolVersion)
+      this.streamEnabled = true
+      return
+    } catch (err: any) {
+      if (this.protocolVersion !== "v2" || err.response?.status !== 400) throw err
+    }
+
+    this.protocolVersion = "v1"
+    this.streamPort = 60221
+    await tryVersion("v1")
     this.streamEnabled = true
-    console.log(`  External control enabled on ${this.ip}`)
   }
 
-  /**
-   * Create UDP socket for streaming
-   */
-  private createSocket(): void {
+  private createSocket = () => {
     this.socket = dgram.createSocket("udp4")
   }
 
-  /**
-   * Stream colors to all panels (single color)
-   */
-  streamSolidColor(color: RGBColor): void {
+  streamSolidColor = (color: RGBColor) => {
     if (!this.socket || !this.streamEnabled) return
 
     const panelColors = new Map<number, RGBColor>()
-    for (const panel of this.panels) {
+    for (const panel of this.panels)
       panelColors.set(panel.panelId, color)
-    }
+
     this.streamPanelColors(panelColors)
   }
 
-  /**
-   * Stream individual panel colors via UDP
-   * This is the fast path - ~1-2ms vs 30-50ms for REST
-   */
-  streamPanelColors(panelColors: Map<number, RGBColor>): void {
+  streamPanelColors = (panelColors: Map<number, RGBColor>) => {
     if (!this.socket || !this.streamEnabled) return
 
-    // Build UDP packet
-    // Format: nPanels [panelId nFrames R G B W transitionTime]...
-    const numPanels = panelColors.size
-    const bytesPerPanel = 7 // panelId(2) + nFrames(1) + R(1) + G(1) + B(1) + W(1) + T(1) - wait that's 8
-    // Actually: panelId is 2 bytes (big endian), rest are 1 byte each
-    // Total per panel: 2 + 1 + 1 + 1 + 1 + 1 = 7 bytes? Let me check...
-    // v2 format: 2-byte panelId + 1 byte each for: R, G, B, W, transitionTime = 7 bytes
-    // Plus 2 bytes for nPanels at start
+    const buffer = this.protocolVersion === "v1"
+      ? this.buildV1Packet(panelColors)
+      : this.buildV2Packet(panelColors)
 
-    const buffer = Buffer.alloc(2 + numPanels * 7)
+    this.socket.send(buffer, this.streamPort, this.ip)
+  }
+
+  private buildV1Packet = (panelColors: Map<number, RGBColor>) => {
+    const numPanels = panelColors.size
+    const buffer = Buffer.alloc(1 + numPanels * 7)
     let offset = 0
 
-    // Number of panels (2 bytes, big endian)
+    buffer.writeUInt8(numPanels, offset++)
+
+    for (const [panelId, color] of panelColors) {
+      buffer.writeUInt8(panelId & 0xFF, offset++)
+      buffer.writeUInt8(1, offset++)
+      buffer.writeUInt8(color.r, offset++)
+      buffer.writeUInt8(color.g, offset++)
+      buffer.writeUInt8(color.b, offset++)
+      buffer.writeUInt8(0, offset++)
+      buffer.writeUInt8(1, offset++)
+    }
+
+    return buffer
+  }
+
+  private buildV2Packet = (panelColors: Map<number, RGBColor>) => {
+    const numPanels = panelColors.size
+    const buffer = Buffer.alloc(2 + numPanels * 8)
+    let offset = 0
+
     buffer.writeUInt16BE(numPanels, offset)
     offset += 2
 
     for (const [panelId, color] of panelColors) {
-      // Panel ID (2 bytes, big endian)
       buffer.writeUInt16BE(panelId, offset)
       offset += 2
-
-      // R, G, B values
       buffer.writeUInt8(color.r, offset++)
       buffer.writeUInt8(color.g, offset++)
       buffer.writeUInt8(color.b, offset++)
-
-      // White channel (0)
       buffer.writeUInt8(0, offset++)
-
-      // Transition time (1 = 100ms, 0 = instant for v2)
-      buffer.writeUInt8(1, offset++)
+      buffer.writeUInt16BE(1, offset)
+      offset += 2
     }
 
-    // Send UDP packet (fire and forget for speed)
-    this.socket.send(buffer, this.streamPort, this.ip)
+    return buffer
   }
 
-  /**
-   * Get panel info for screen mapping
-   */
-  getPanels(): PanelInfo[] {
-    return this.panels
-  }
+  getPanels = () => this.panels
 
-  /**
-   * Check if streaming is enabled
-   */
-  isStreaming(): boolean {
-    return this.streamEnabled
-  }
+  isStreaming = () => this.streamEnabled
 
-  /**
-   * Cleanup: close socket
-   */
-  async cleanup(): Promise<void> {
+  cleanup = async () => {
     if (this.socket) {
       this.socket.close()
       this.socket = null
