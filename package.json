@@ -4,13 +4,14 @@
   "description": "Real-time screen-scraping light synchronization for Philips Hue and Nanoleaf",
   "main": "dist/index.js",
   "scripts": {
+    "setup": "node setup.js",
     "build": "tsc",
     "start": "node dist/index.js",
     "start:advanced": "node dist/index_advanced.js",
-    "dev": "ts-node src/index.ts",
-    "dev:advanced": "ts-node src/index_advanced.ts",
+    "dev": "tsx src/index.ts",
+    "dev:advanced": "tsx src/index_advanced.ts",
     "watch": "tsc -w",
-    "test-hue": "ts-node src/test-hue.ts"
+    "test-hue": "tsx src/test-hue.ts"
   },
   "keywords": [
     "hue",
@@ -30,7 +31,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   }
 }

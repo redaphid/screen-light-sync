@@ -55,32 +55,49 @@ export class HueController {
     }
   }
 
-  /**
-   * Create a new user on the bridge
-   * NOTE: You must press the link button on the bridge before calling this!
-   */
-  async createUser(bridgeIp: string): Promise<string> {
-    try {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log('PLEASE PRESS THE LINK BUTTON ON YOUR HUE BRIDGE NOW!');
-      console.log(`${'='.repeat(60)}\n`);
-      console.log('Waiting 30 seconds for button press...');
+  async createUser(bridgeIp: string, askContinue?: () => Promise<boolean>): Promise<string> {
+    const maxAttempts = 5
+    const waitSeconds = 30
 
-      await new Promise(resolve => setTimeout(resolve, 30000));
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`\n${'='.repeat(60)}`)
+      console.log(`  HUE BRIDGE PAIRING - ${bridgeIp}`)
+      console.log(`${'='.repeat(60)}`)
+      console.log('')
+      console.log('  1. Find the large button on top of your Hue Bridge')
+      console.log('  2. Press it once (it will light up)')
+      console.log('  3. Pairing will happen automatically')
+      console.log('')
+      console.log(`${'='.repeat(60)}\n`)
+      console.log(`Attempt ${attempt}/${maxAttempts}: Waiting ${waitSeconds}s for button press...`)
 
-      const unauthenticatedApi = await hueApi.createLocal(bridgeIp).connect();
-      const createdUser = await unauthenticatedApi.users.createUser(
-        this.appName,
-        this.deviceName
-      );
+      await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000))
 
-      const username = createdUser.username;
-      console.log(`✓ User created successfully: ${username}`);
-      return username;
-    } catch (error) {
-      console.error('Error creating user:', error);
-      throw new Error('Failed to create user. Did you press the link button?');
+      try {
+        const unauthenticatedApi = await hueApi.createLocal(bridgeIp).connect()
+        const createdUser = await unauthenticatedApi.users.createUser(
+          this.appName,
+          this.deviceName
+        )
+
+        const username = createdUser.username
+        console.log(`✓ User created successfully: ${username}`)
+        return username
+      } catch (error: any) {
+        console.log(`✗ Attempt ${attempt} failed: ${error.message}`)
+
+        if (attempt === maxAttempts) {
+          if (!askContinue) throw new Error('Failed to create user after maximum attempts')
+
+          const shouldContinue = await askContinue()
+          if (!shouldContinue) throw new Error('User cancelled authentication')
+
+          return this.createUser(bridgeIp, askContinue)
+        }
+      }
     }
+
+    throw new Error('Failed to create user')
   }
 
   /**

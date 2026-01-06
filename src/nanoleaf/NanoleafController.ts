@@ -54,38 +54,55 @@ export class NanoleafController {
     });
   }
 
-  /**
-   * Create a new authentication token
-   * NOTE: You must hold the power button on the Nanoleaf for 5-7 seconds first!
-   */
-  async createAuthToken(ip: string): Promise<string> {
-    try {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log('HOLD THE POWER BUTTON ON YOUR NANOLEAF FOR 5-7 SECONDS!');
-      console.log('The LED should start blinking.');
-      console.log(`${'='.repeat(60)}\n`);
-      console.log('Waiting 30 seconds for button press...');
+  async createAuthToken(ip: string, askContinue?: () => Promise<boolean>): Promise<string> {
+    const maxAttempts = 5
+    const waitSeconds = 30
 
-      await new Promise(resolve => setTimeout(resolve, 30000));
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`\n${'='.repeat(60)}`)
+      console.log(`  NANOLEAF PAIRING - ${ip}`)
+      console.log(`${'='.repeat(60)}`)
+      console.log('')
+      console.log('  1. Find the power button on your Nanoleaf controller')
+      console.log('  2. Hold it down for 5-7 seconds')
+      console.log('  3. The LED will start flashing - release the button')
+      console.log('  4. Pairing will happen automatically')
+      console.log('')
+      console.log(`${'='.repeat(60)}\n`)
+      console.log(`Attempt ${attempt}/${maxAttempts}: Waiting ${waitSeconds}s for button press...`)
 
-      const response = await axios.post(
-        `http://${ip}:${this.port}/api/v1/new`,
-        {},
-        { timeout: 10000 }
-      );
+      await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000))
 
-      const authToken = response.data.auth_token;
-      console.log(`✓ Auth token created successfully: ${authToken}`);
+      try {
+        const response = await axios.post(
+          `http://${ip}:${this.port}/api/v1/new`,
+          {},
+          { timeout: 10000 }
+        )
 
-      this.ip = ip;
-      this.authToken = authToken;
-      this.initClient();
+        const authToken = response.data.auth_token
+        console.log(`✓ Auth token created successfully: ${authToken}`)
 
-      return authToken;
-    } catch (error: any) {
-      console.error('Error creating auth token:', error.message);
-      throw new Error('Failed to create auth token. Did you hold the power button?');
+        this.ip = ip
+        this.authToken = authToken
+        this.initClient()
+
+        return authToken
+      } catch (error: any) {
+        console.log(`✗ Attempt ${attempt} failed: ${error.message}`)
+
+        if (attempt === maxAttempts) {
+          if (!askContinue) throw new Error('Failed to create auth token after maximum attempts')
+
+          const shouldContinue = await askContinue()
+          if (!shouldContinue) throw new Error('User cancelled authentication')
+
+          return this.createAuthToken(ip, askContinue)
+        }
+      }
     }
+
+    throw new Error('Failed to create auth token')
   }
 
   /**

@@ -51,58 +51,89 @@ async function runSetupWizard(configManager: ConfigManager): Promise<void> {
   const config = ConfigManager.createDefaultConfig();
 
   // Philips Hue Setup
-  const setupHue = await askYesNo('Do you have Philips Hue lights?');
+  const setupHue = await askYesNo('Do you have Philips Hue lights?')
   if (setupHue) {
-    console.log('\n--- Philips Hue Setup ---');
-    const hueController = new HueController();
+    console.log('\n--- Philips Hue Setup ---')
+    const hueController = new HueController()
 
-    console.log('Discovering Hue bridges...');
-    const bridges = await hueController.discoverBridges();
+    console.log('Discovering Hue bridges...')
+    const bridges = await hueController.discoverBridges()
 
     if (bridges.length === 0) {
-      console.log('⚠ No Hue bridges found on your network');
+      console.log('⚠ No Hue bridges found on your network')
     } else {
-      console.log(`\nFound ${bridges.length} bridge(s):`);
+      console.log(`\nFound ${bridges.length} bridge(s):`)
       bridges.forEach((bridge, i) => {
-        console.log(`  ${i + 1}. ${bridge.ipaddress} (${bridge.name || 'Unknown'})`);
-      });
+        console.log(`  ${i + 1}. ${bridge.ipaddress} (${bridge.name || 'Unknown'})`)
+      })
 
-      const bridgeIp = bridges[0].ipaddress;
-      console.log(`\nUsing bridge: ${bridgeIp}`);
+      const bridgeIp = bridges[0].ipaddress
+      console.log(`\nUsing bridge: ${bridgeIp}`)
 
-      // Create user
-      const username = await hueController.createUser(bridgeIp);
+      const askContinueRetry = async () => {
+        return await askYesNo('Continue trying to pair?')
+      }
 
-      config.hue = {
-        bridgeIp,
-        username,
-        lightIds: [], // Empty means use all lights
-        entertainmentAreaId: null,
-      };
+      try {
+        const username = await hueController.createUser(bridgeIp, askContinueRetry)
 
-      console.log('✓ Hue setup complete!');
+        config.hue = {
+          bridgeIp,
+          username,
+          lightIds: [],
+          entertainmentAreaId: null,
+        }
+        config.sync!.enableHue = true
+        console.log('✓ Hue setup complete!')
+      } catch (error: any) {
+        console.log(`✗ Failed to pair Hue bridge: ${error.message}`)
+        config.sync!.enableHue = false
+      }
     }
   } else {
-    config.sync!.enableHue = false;
+    config.sync!.enableHue = false
   }
 
   // Nanoleaf Setup
-  const setupNanoleaf = await askYesNo('\nDo you have Nanoleaf panels?');
+  const setupNanoleaf = await askYesNo('\nDo you have Nanoleaf panels?')
   if (setupNanoleaf) {
-    console.log('\n--- Nanoleaf Setup ---');
-    const nanoleafIp = await askInput('Enter your Nanoleaf IP address');
+    console.log('\n--- Nanoleaf Setup ---')
+    console.log('You can set up multiple Nanoleaf panels.\n')
 
-    const nanoleafController = new NanoleafController();
-    const authToken = await nanoleafController.createAuthToken(nanoleafIp);
+    const askContinueRetry = async () => {
+      return await askYesNo('Continue trying to pair?')
+    }
 
-    config.nanoleaf = {
-      ip: nanoleafIp,
-      authToken,
-    };
+    const nanoleafDevices: Array<{ ip: string; authToken: string }> = []
+    let addMore = true
 
-    console.log('✓ Nanoleaf setup complete!');
+    while (addMore) {
+      const nanoleafIp = await askInput('Enter Nanoleaf IP address')
+      if (!nanoleafIp) break
+
+      try {
+        const nanoleafController = new NanoleafController()
+        const authToken = await nanoleafController.createAuthToken(nanoleafIp, askContinueRetry)
+        nanoleafDevices.push({ ip: nanoleafIp, authToken })
+        console.log(`✓ Nanoleaf at ${nanoleafIp} paired successfully!`)
+      } catch (error: any) {
+        console.log(`✗ Failed to pair Nanoleaf at ${nanoleafIp}: ${error.message}`)
+      }
+
+      addMore = await askYesNo('\nAdd another Nanoleaf panel?')
+    }
+
+    if (nanoleafDevices.length > 0) {
+      config.nanoleaf = nanoleafDevices[0]
+      config.nanoleafDevices = nanoleafDevices
+      config.sync!.enableNanoleaf = true
+      console.log(`\n✓ ${nanoleafDevices.length} Nanoleaf device(s) configured!`)
+    } else {
+      config.sync!.enableNanoleaf = false
+      console.log('\n⚠ No Nanoleaf devices were paired')
+    }
   } else {
-    config.sync!.enableNanoleaf = false;
+    config.sync!.enableNanoleaf = false
   }
 
   // Sync Settings

@@ -2,17 +2,20 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { ScreenZone } from '../color/ColorExtractor';
 
+export interface NanoleafDevice {
+  ip: string
+  authToken: string
+}
+
 export interface AppConfig {
   hue: {
-    bridgeIp: string;
-    username: string;
-    lightIds: number[];
-    entertainmentAreaId: number | null;
-  };
-  nanoleaf: {
-    ip: string;
-    authToken: string;
-  };
+    bridgeIp: string
+    username: string
+    lightIds: number[]
+    entertainmentAreaId: number | null
+  }
+  nanoleaf: NanoleafDevice
+  nanoleafDevices?: NanoleafDevice[]
   sync: {
     fps: number;
     brightness: number;
