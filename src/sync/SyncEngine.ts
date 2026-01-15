@@ -151,8 +151,12 @@ export class SyncEngine {
     try {
       const captureStart = Date.now()
 
-      // Build regions for all panels across all streamers
-      const allRegions: CaptureRegion[] = []
+      // Build regions for Hue lights
+      const huePositions = this.hueStreaming?.getNormalizedPositions() || []
+      const hueRegions: CaptureRegion[] = huePositions.map(p => ({ x: p.x, y: p.y, size: 0.15 }))
+
+      // Build regions for Nanoleaf panels
+      const nanoleafRegions: CaptureRegion[] = []
       const streamerPanelCounts: number[] = []
 
       for (const streamer of this.nanoleafStreamers) {
@@ -160,21 +164,23 @@ export class SyncEngine {
         const panels = streamer.getNormalizedPanels()
         streamerPanelCounts.push(panels.length)
         for (const panel of panels) {
-          allRegions.push({ x: panel.x, y: panel.y, size: 0.08 })
+          nanoleafRegions.push({ x: panel.x, y: panel.y, size: 0.08 })
         }
       }
 
       // Capture all regions in one call
+      const allRegions = [...hueRegions, ...nanoleafRegions]
       const colors = await this.capture.captureRegions(allRegions)
       const captureTime = Date.now() - captureStart
 
       const colorStart = Date.now()
-      // Enhance colors
       const enhanced = colors.map(c => this.enhanceColor(c, this.config.colorBoost))
+      const hueColors = enhanced.slice(0, huePositions.length)
+      const nanoleafColors = enhanced.slice(huePositions.length)
       const colorTime = Date.now() - colorStart
 
       const lightStart = Date.now()
-      await this.updateLights(enhanced, streamerPanelCounts)
+      await this.updateLights(hueColors, huePositions, nanoleafColors, streamerPanelCounts)
       const lightTime = Date.now() - lightStart
 
       const totalTime = Date.now() - frameStart
@@ -197,25 +203,24 @@ export class SyncEngine {
     }
   }
 
-  private async updateLights(colors: RGBColor[], streamerPanelCounts: number[]): Promise<void> {
-    // Compute average for Hue
+  private async updateLights(
+    hueColors: RGBColor[],
+    huePositions: Array<{ id: string, x: number, y: number }>,
+    nanoleafColors: RGBColor[],
+    streamerPanelCounts: number[]
+  ): Promise<void> {
+    // Send per-light colors to Hue
     if (this.config.enableHue && this.hueStreaming?.isStreaming()) {
-      const avg = colors.reduce(
-        (acc, c) => ({ r: acc.r + c.r, g: acc.g + c.g, b: acc.b + c.b }),
-        { r: 0, g: 0, b: 0 }
-      )
-      const n = colors.length || 1
-      this.hueStreaming.streamSolidColor({
-        r: Math.round(avg.r / n),
-        g: Math.round(avg.g / n),
-        b: Math.round(avg.b / n),
+      const lightColors = new Map<string, RGBColor>()
+      huePositions.forEach((pos, i) => {
+        lightColors.set(pos.id, hueColors[i] || { r: 0, g: 0, b: 0 })
       })
+      this.hueStreaming.streamLightColors(lightColors)
     }
 
     // Distribute colors to Nanoleaf streamers
     if (this.config.enableNanoleaf) {
       let colorIdx = 0
-      let streamerIdx = 0
 
       for (const streamer of this.nanoleafStreamers) {
         if (!streamer.isStreaming()) continue
@@ -224,12 +229,11 @@ export class SyncEngine {
         const panelColors = new Map<number, RGBColor>()
 
         for (const panel of panels) {
-          panelColors.set(panel.panelId, colors[colorIdx] || { r: 0, g: 0, b: 0 })
+          panelColors.set(panel.panelId, nanoleafColors[colorIdx] || { r: 0, g: 0, b: 0 })
           colorIdx++
         }
 
         streamer.streamPanelColors(panelColors)
-        streamerIdx++
       }
     }
   }

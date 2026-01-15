@@ -14,10 +14,17 @@ export interface HueStreamingConfig {
   entertainmentGroupId?: string
 }
 
+interface LightPosition {
+  id: string
+  x: number
+  y: number
+}
+
 export class HueStreamingController {
   private socket: any = null
   private config: HueStreamingConfig
   private lightIds: string[] = []
+  private lightPositions: LightPosition[] = []
   private streamEnabled = false
   private groupId = ""
 
@@ -38,6 +45,20 @@ export class HueStreamingController {
     this.groupId = group.id
     this.lightIds = group.lights
 
+    // Extract and normalize light positions (x: -1 to 1, z: -1 to 1 for height)
+    // Hue uses: x = left/right, y = front/back, z = up/down
+    // We map x to screen x, z to screen y
+    if (group.locations) {
+      this.lightPositions = group.lights.map(id => {
+        const loc = group.locations[id] || [0, 0, 0]
+        return {
+          id,
+          x: (loc[0] + 1) / 2,  // -1..1 -> 0..1
+          y: 1 - (loc[2] + 1) / 2,  // -1..1 -> 1..0 (invert for screen coords)
+        }
+      })
+    }
+
     console.log(`  Hue Entertainment: ${group.name} (${this.lightIds.length} lights)`)
 
     await this.resetEntertainmentMode()
@@ -55,7 +76,8 @@ export class HueStreamingController {
       .map(([id, g]: [string, any]) => ({
         id,
         name: g.name,
-        lights: g.lights,
+        lights: g.lights as string[],
+        locations: g.locations as Record<string, [number, number, number]>,
       }))
   }
 
@@ -138,6 +160,20 @@ export class HueStreamingController {
   }
 
   getLightIds = () => this.lightIds
+
+  getNormalizedPositions = () => this.lightPositions
+
+  streamLightColors = (colors: Map<string, RGBColor>) => {
+    if (!this.socket || !this.streamEnabled) return
+
+    const lightColors = this.lightIds.map(id => {
+      const color = colors.get(id) || { r: 0, g: 0, b: 0 }
+      return { id, r: color.r, g: color.g, b: color.b }
+    })
+
+    const message = this.buildMessage(lightColors)
+    this.socket.send(message)
+  }
 
   isStreaming = () => this.streamEnabled
 
