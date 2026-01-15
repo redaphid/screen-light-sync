@@ -12,12 +12,21 @@ export interface HueStreamingConfig {
   username: string
   clientKey: string
   entertainmentGroupId?: string
+  enableAllLights?: boolean
 }
 
 interface LightPosition {
   id: string
   x: number
   y: number
+}
+
+interface RestLight {
+  id: string
+  name: string
+  x: number
+  y: number
+  supportsColor: boolean
 }
 
 export class HueStreamingController {
@@ -27,6 +36,10 @@ export class HueStreamingController {
   private lightPositions: LightPosition[] = []
   private streamEnabled = false
   private groupId = ""
+
+  private restLights: RestLight[] = []
+  private lastRestUpdate = 0
+  private restUpdateInterval = 200
 
   constructor(config: HueStreamingConfig) {
     this.config = config
@@ -65,6 +78,34 @@ export class HueStreamingController {
     await this.createDtlsSocket()
 
     console.log(`  ✓ Hue DTLS streaming ready`)
+
+    if (this.config.enableAllLights) {
+      await this.initRestLights()
+    }
+  }
+
+  private initRestLights = async () => {
+    const url = `http://${this.config.bridgeIp}/api/${this.config.username}/lights`
+    const response = await axios.get(url)
+
+    const entertainmentSet = new Set(this.lightIds)
+    const allLights = Object.entries(response.data) as [string, any][]
+
+    this.restLights = allLights
+      .filter(([id]) => !entertainmentSet.has(id))
+      .filter(([_, light]) => light.state?.reachable !== false)
+      .map(([id, light], index, arr) => ({
+        id,
+        name: light.name,
+        x: (index + 0.5) / arr.length,
+        y: 0.5,
+        supportsColor: light.type?.toLowerCase().includes('color') ||
+          !!light.capabilities?.control?.colorgamut,
+      }))
+
+    if (this.restLights.length > 0) {
+      console.log(`  REST lights (non-entertainment): ${this.restLights.map(l => l.name).join(', ')}`)
+    }
   }
 
   private getEntertainmentGroups = async () => {
@@ -175,7 +216,63 @@ export class HueStreamingController {
     this.socket.send(message)
   }
 
+  getRestLightPositions = (): LightPosition[] => {
+    return this.restLights.map(l => ({ id: l.id, x: l.x, y: l.y }))
+  }
+
+  private restLightIndex = 0
+
+  updateRestLights = async (colors: Map<string, RGBColor>) => {
+    const now = Date.now()
+    if (now - this.lastRestUpdate < this.restUpdateInterval) return
+    if (this.restLights.length === 0) return
+    this.lastRestUpdate = now
+
+    // Round-robin: update one light at a time to stay within rate limits
+    const light = this.restLights[this.restLightIndex]
+    this.restLightIndex = (this.restLightIndex + 1) % this.restLights.length
+
+    const color = colors.get(light.id)
+    if (!color) return
+
+    const url = `http://${this.config.bridgeIp}/api/${this.config.username}/lights/${light.id}/state`
+
+    try {
+      if (light.supportsColor) {
+        const [h, s, b] = this.rgbToHsb(color)
+        axios.put(url, { on: true, hue: h, sat: s, bri: b, transitiontime: 2 }, { timeout: 1000 })
+      } else {
+        const bri = Math.round(0.299 * color.r + 0.587 * color.g + 0.114 * color.b)
+        axios.put(url, { on: true, bri: Math.max(1, bri), transitiontime: 2 }, { timeout: 1000 })
+      }
+    } catch {
+      // Ignore errors to prevent blocking
+    }
+  }
+
+  private rgbToHsb = (color: RGBColor): [number, number, number] => {
+    const r = color.r / 255, g = color.g / 255, b = color.b / 255
+    const max = Math.max(r, g, b), min = Math.min(r, g, b)
+    const d = max - min
+
+    let h = 0
+    if (d !== 0) {
+      if (max === r) h = ((g - b) / d + 6) % 6
+      else if (max === g) h = (b - r) / d + 2
+      else h = (r - g) / d + 4
+    }
+
+    const s = max === 0 ? 0 : d / max
+    return [
+      Math.round(h / 6 * 65535),
+      Math.round(s * 254),
+      Math.round(max * 254),
+    ]
+  }
+
   isStreaming = () => this.streamEnabled
+
+  hasRestLights = () => this.restLights.length > 0
 
   cleanup = async () => {
     if (this.socket) {

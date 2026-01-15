@@ -71,12 +71,13 @@ export class SyncEngine {
     this.nanoleafStreamers.push(streamer)
   }
 
-  async initHueStreaming(bridgeIp: string, username: string, clientKey: string, groupId?: string): Promise<void> {
+  async initHueStreaming(bridgeIp: string, username: string, clientKey: string, groupId?: string, enableAllLights = true): Promise<void> {
     this.hueStreaming = new HueStreamingController({
       bridgeIp,
       username,
       clientKey,
       entertainmentGroupId: groupId,
+      enableAllLights,
     })
     await this.hueStreaming.initialize()
   }
@@ -151,9 +152,13 @@ export class SyncEngine {
     try {
       const captureStart = Date.now()
 
-      // Build regions for Hue lights
+      // Build regions for Hue entertainment lights (DTLS)
       const huePositions = this.hueStreaming?.getNormalizedPositions() || []
       const hueRegions: CaptureRegion[] = huePositions.map(p => ({ x: p.x, y: p.y, size: 0.15 }))
+
+      // Build regions for Hue REST lights (non-entertainment)
+      const restPositions = this.hueStreaming?.getRestLightPositions() || []
+      const restRegions: CaptureRegion[] = restPositions.map(p => ({ x: p.x, y: p.y, size: 0.15 }))
 
       // Build regions for Nanoleaf panels
       const nanoleafRegions: CaptureRegion[] = []
@@ -169,18 +174,19 @@ export class SyncEngine {
       }
 
       // Capture all regions in one call
-      const allRegions = [...hueRegions, ...nanoleafRegions]
+      const allRegions = [...hueRegions, ...restRegions, ...nanoleafRegions]
       const colors = await this.capture.captureRegions(allRegions)
       const captureTime = Date.now() - captureStart
 
       const colorStart = Date.now()
       const enhanced = colors.map(c => this.enhanceColor(c, this.config.colorBoost))
       const hueColors = enhanced.slice(0, huePositions.length)
-      const nanoleafColors = enhanced.slice(huePositions.length)
+      const restColors = enhanced.slice(huePositions.length, huePositions.length + restPositions.length)
+      const nanoleafColors = enhanced.slice(huePositions.length + restPositions.length)
       const colorTime = Date.now() - colorStart
 
       const lightStart = Date.now()
-      await this.updateLights(hueColors, huePositions, nanoleafColors, streamerPanelCounts)
+      await this.updateLights(hueColors, huePositions, restColors, restPositions, nanoleafColors, streamerPanelCounts)
       const lightTime = Date.now() - lightStart
 
       const totalTime = Date.now() - frameStart
@@ -206,16 +212,27 @@ export class SyncEngine {
   private async updateLights(
     hueColors: RGBColor[],
     huePositions: Array<{ id: string, x: number, y: number }>,
+    restColors: RGBColor[],
+    restPositions: Array<{ id: string, x: number, y: number }>,
     nanoleafColors: RGBColor[],
     streamerPanelCounts: number[]
   ): Promise<void> {
-    // Send per-light colors to Hue
+    // Send per-light colors to Hue entertainment lights (DTLS)
     if (this.config.enableHue && this.hueStreaming?.isStreaming()) {
       const lightColors = new Map<string, RGBColor>()
       huePositions.forEach((pos, i) => {
         lightColors.set(pos.id, hueColors[i] || { r: 0, g: 0, b: 0 })
       })
       this.hueStreaming.streamLightColors(lightColors)
+    }
+
+    // Update Hue REST lights (non-entertainment, rate-limited)
+    if (this.config.enableHue && this.hueStreaming?.hasRestLights()) {
+      const restLightColors = new Map<string, RGBColor>()
+      restPositions.forEach((pos, i) => {
+        restLightColors.set(pos.id, restColors[i] || { r: 0, g: 0, b: 0 })
+      })
+      this.hueStreaming.updateRestLights(restLightColors)
     }
 
     // Distribute colors to Nanoleaf streamers
