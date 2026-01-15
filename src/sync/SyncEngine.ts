@@ -1,4 +1,4 @@
-import { FastColorSampler, RGBColor } from '../capture/FastColorSampler'
+import { DxgiCapture, RGBColor, CaptureRegion } from '../capture/DxgiCapture'
 import { HueController } from '../hue/HueController'
 import { HueStreamingController } from '../hue/HueStreamingController'
 import { NanoleafController } from '../nanoleaf/NanoleafController'
@@ -11,22 +11,18 @@ export interface SyncConfig {
   hueLightIds?: number[]
   enableHue?: boolean
   enableNanoleaf?: boolean
-  sampleStep?: number  // Sample every Nth pixel (default: 10)
 }
 
 export interface SyncStats {
-  fps: number;
-  captureTime: number;
-  colorExtractionTime: number;
-  lightUpdateTime: number;
-  totalFrameTime: number;
+  fps: number
+  captureTime: number
+  colorExtractionTime: number
+  lightUpdateTime: number
+  totalFrameTime: number
 }
 
-/**
- * Main synchronization engine using FastColorSampler for low-latency capture
- */
 export class SyncEngine {
-  private sampler: FastColorSampler
+  private capture: DxgiCapture
   private hueController?: HueController
   private hueStreaming?: HueStreamingController
   private nanoleafController?: NanoleafController
@@ -51,20 +47,22 @@ export class SyncEngine {
     nanoleafController?: NanoleafController,
     config: SyncConfig = {}
   ) {
-    const sampleStep = config.sampleStep || 10
-    this.sampler = new FastColorSampler(sampleStep)
+    this.capture = new DxgiCapture()
     this.hueController = hueController
     this.nanoleafController = nanoleafController
 
     this.config = {
-      fps: config.fps || 10,
+      fps: config.fps || 30,
       brightness: config.brightness || 255,
       colorBoost: config.colorBoost || 1.2,
       hueLightIds: config.hueLightIds || [],
       enableHue: config.enableHue !== false,
       enableNanoleaf: config.enableNanoleaf !== false,
-      sampleStep,
     }
+  }
+
+  initCapture = async () => {
+    await this.capture.initialize()
   }
 
   async initNanoleafStreaming(ip: string, authToken: string): Promise<void> {
@@ -130,42 +128,53 @@ export class SyncEngine {
     }, 5000);
   }
 
-  /**
-   * Stop the synchronization loop
-   */
   stop(): void {
     if (!this.isRunning) {
-      console.log('⚠ Sync engine is not running');
-      return;
+      console.log('⚠ Sync engine is not running')
+      return
     }
 
-    console.log('\n🛑 Stopping screen-light synchronization...');
+    console.log('\n🛑 Stopping screen-light synchronization...')
 
     if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-      this.syncInterval = undefined;
+      clearInterval(this.syncInterval)
+      this.syncInterval = undefined
     }
 
-    this.isRunning = false;
+    this.capture.cleanup()
+    this.isRunning = false
   }
 
   private async syncFrame(): Promise<void> {
     const frameStart = Date.now()
 
     try {
-      // 1. Capture + extract color in one step (no JPEG encoding!)
       const captureStart = Date.now()
-      let color = this.sampler.getAverageColor()
+
+      // Build regions for all panels across all streamers
+      const allRegions: CaptureRegion[] = []
+      const streamerPanelCounts: number[] = []
+
+      for (const streamer of this.nanoleafStreamers) {
+        if (!streamer.isStreaming()) continue
+        const panels = streamer.getNormalizedPanels()
+        streamerPanelCounts.push(panels.length)
+        for (const panel of panels) {
+          allRegions.push({ x: panel.x, y: panel.y, size: 0.08 })
+        }
+      }
+
+      // Capture all regions in one call
+      const colors = await this.capture.captureRegions(allRegions)
       const captureTime = Date.now() - captureStart
 
-      // 2. Enhance color
       const colorStart = Date.now()
-      color = this.sampler.enhanceColor(color, this.config.colorBoost)
+      // Enhance colors
+      const enhanced = colors.map(c => this.enhanceColor(c, this.config.colorBoost))
       const colorTime = Date.now() - colorStart
 
-      // 3. Update lights
       const lightStart = Date.now()
-      await this.updateLights(color)
+      await this.updateLights(enhanced, streamerPanelCounts)
       const lightTime = Date.now() - lightStart
 
       const totalTime = Date.now() - frameStart
@@ -175,48 +184,54 @@ export class SyncEngine {
     }
   }
 
-  /**
-   * Update all connected lights
-   */
-  private async updateLights(color: RGBColor): Promise<void> {
-    const promises: Promise<any>[] = [];
+  private enhanceColor = (color: RGBColor, boost: number): RGBColor => {
+    const max = Math.max(color.r, color.g, color.b)
+    const min = Math.min(color.r, color.g, color.b)
+    if (max === min) return color
 
-    // Update Hue lights - prefer DTLS streaming over REST
-    if (this.config.enableHue) {
-      if (this.hueStreaming?.isStreaming()) {
-        this.hueStreaming.streamSolidColor(color)
-      } else if (this.hueController) {
-        if (this.config.hueLightIds.length > 0) {
-          const lightColors = new Map<number, RGBColor>()
-          for (const lightId of this.config.hueLightIds) {
-            lightColors.set(lightId, color)
-          }
-          promises.push(this.hueController.setMultipleLights(lightColors, this.config.brightness))
-        } else {
-          const lights = await this.hueController.getLights()
-          const lightColors = new Map<number, RGBColor>()
-          for (const light of lights) {
-            lightColors.set(light.id, color)
-          }
-          promises.push(this.hueController.setMultipleLights(lightColors, this.config.brightness))
-        }
-      }
+    const mid = (max + min) / 2
+    return {
+      r: Math.min(255, Math.max(0, Math.round(mid + (color.r - mid) * boost))),
+      g: Math.min(255, Math.max(0, Math.round(mid + (color.g - mid) * boost))),
+      b: Math.min(255, Math.max(0, Math.round(mid + (color.b - mid) * boost))),
+    }
+  }
+
+  private async updateLights(colors: RGBColor[], streamerPanelCounts: number[]): Promise<void> {
+    // Compute average for Hue
+    if (this.config.enableHue && this.hueStreaming?.isStreaming()) {
+      const avg = colors.reduce(
+        (acc, c) => ({ r: acc.r + c.r, g: acc.g + c.g, b: acc.b + c.b }),
+        { r: 0, g: 0, b: 0 }
+      )
+      const n = colors.length || 1
+      this.hueStreaming.streamSolidColor({
+        r: Math.round(avg.r / n),
+        g: Math.round(avg.g / n),
+        b: Math.round(avg.b / n),
+      })
     }
 
-    // Update Nanoleaf - prefer UDP streaming over REST
+    // Distribute colors to Nanoleaf streamers
     if (this.config.enableNanoleaf) {
-      if (this.nanoleafStreamers.length > 0) {
-        for (const streamer of this.nanoleafStreamers) {
-          if (streamer.isStreaming()) {
-            streamer.streamSolidColor(color)
-          }
+      let colorIdx = 0
+      let streamerIdx = 0
+
+      for (const streamer of this.nanoleafStreamers) {
+        if (!streamer.isStreaming()) continue
+
+        const panels = streamer.getNormalizedPanels()
+        const panelColors = new Map<number, RGBColor>()
+
+        for (const panel of panels) {
+          panelColors.set(panel.panelId, colors[colorIdx] || { r: 0, g: 0, b: 0 })
+          colorIdx++
         }
-      } else if (this.nanoleafController) {
-        promises.push(this.nanoleafController.setSolidColor(color))
+
+        streamer.streamPanelColors(panelColors)
+        streamerIdx++
       }
     }
-
-    if (promises.length > 0) await Promise.all(promises)
   }
 
   /**

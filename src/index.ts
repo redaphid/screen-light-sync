@@ -1,8 +1,8 @@
-import * as readline from 'readline';
-import { ConfigManager } from './config/ConfigManager';
-import { HueController } from './hue/HueController';
-import { NanoleafController } from './nanoleaf/NanoleafController';
-import { SyncEngine } from './sync/SyncEngine';
+import * as readline from 'readline'
+import { ConfigManager } from './config/ConfigManager'
+import { HueController } from './hue/HueController'
+import { NanoleafController } from './nanoleaf/NanoleafController'
+import { SyncEngine } from './sync/SyncEngine'
 
 /**
  * Simple readline interface for user input
@@ -177,44 +177,14 @@ async function main() {
     }
   }
 
-  // Initialize controllers
-  let hueController: HueController | undefined;
-  let nanoleafController: NanoleafController | undefined;
+  const syncEngine = new SyncEngine(undefined, undefined, config.sync)
 
-  if (config.sync?.enableHue && config.hue?.bridgeIp && config.hue?.username) {
-    console.log('\n🔵 Initializing Philips Hue...')
-    hueController = new HueController({
-      bridgeIp: config.hue.bridgeIp,
-      username: config.hue.username,
-    })
-    await hueController.connect()
-
-    const lights = await hueController.getLights()
-    console.log(`   Found ${lights.length} light(s):`)
-    lights.forEach(light => {
-      console.log(`   - ${light.name} (ID: ${light.id})`)
-    })
-  }
-
-  if (config.sync?.enableNanoleaf && config.nanoleaf?.ip && config.nanoleaf?.authToken) {
-    console.log('\n🔶 Initializing Nanoleaf...');
-    nanoleafController = new NanoleafController({
-      ip: config.nanoleaf.ip,
-      authToken: config.nanoleaf.authToken,
-    });
-    await nanoleafController.connect(config.nanoleaf.ip, config.nanoleaf.authToken);
-  }
-
-  if (!hueController && !nanoleafController) {
-    console.log('\n⚠ No devices configured. Please run setup again.');
-    process.exit(0);
-  }
-
-  const syncEngine = new SyncEngine(hueController, nanoleafController, config.sync)
+  console.log('\n🖥️  Initializing DXGI screen capture...')
+  await syncEngine.initCapture()
 
   if (config.sync?.enableHue && config.hue?.bridgeIp && config.hue?.username && config.hue?.clientKey) {
+    console.log('\n🔵 Initializing Philips Hue Entertainment API...')
     try {
-      console.log(`  Initializing Hue DTLS streaming...`)
       await syncEngine.initHueStreaming(
         config.hue.bridgeIp,
         config.hue.username,
@@ -222,13 +192,13 @@ async function main() {
         String(config.sync?.hueEntertainmentAreaId || config.hue.entertainmentAreaId || "") || undefined,
       )
     } catch (err: any) {
-      console.log(`  ⚠ Hue streaming failed, using REST: ${err.message}`)
+      console.log(`  ✗ Hue streaming failed: ${err.message}`)
     }
   }
 
   if (config.sync?.enableNanoleaf) {
+    console.log('\n🔶 Initializing Nanoleaf UDP streaming...')
     const devices = config.nanoleafDevices || (config.nanoleaf ? [config.nanoleaf] : [])
-    console.log(`  Initializing UDP streaming for ${devices.length} device(s)...`)
     for (const device of devices) {
       try {
         await syncEngine.initNanoleafStreaming(device.ip, device.authToken)
@@ -239,28 +209,12 @@ async function main() {
     console.log(`  ✓ UDP streaming ready`)
   }
 
-  // Handle exit gracefully
-  process.on('SIGINT', async () => {
-    console.log('\n\n🛑 Shutting down...');
-    syncEngine.stop();
-
-    if (hueController) {
-      const turnOff = await askYesNo('Turn off Hue lights?');
-      if (turnOff) {
-        await hueController.turnOffAll();
-      }
-    }
-
-    if (nanoleafController) {
-      const turnOff = await askYesNo('Turn off Nanoleaf?');
-      if (turnOff) {
-        await nanoleafController.turnOff();
-      }
-    }
-
-    console.log('👋 Goodbye!');
-    process.exit(0);
-  });
+  process.on('SIGINT', () => {
+    console.log('\n\n🛑 Shutting down...')
+    syncEngine.stop()
+    console.log('👋 Goodbye!')
+    process.exit(0)
+  })
 
   // Start synchronization
   await syncEngine.start();

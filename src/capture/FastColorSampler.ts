@@ -7,16 +7,18 @@ export interface RGBColor {
 }
 
 export interface SampleRegion {
-  x: number      // 0-1 percentage
-  y: number      // 0-1 percentage
-  width: number  // 0-1 percentage
-  height: number // 0-1 percentage
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
-/**
- * Fast color sampling directly from raw screen buffer
- * Skips the encode/decode cycle for ~30ms+ savings per frame
- */
+export interface ScreenData {
+  width: number
+  height: number
+  data: Buffer
+}
+
 export class FastColorSampler {
   private screenWidth: number
   private screenHeight: number
@@ -26,7 +28,72 @@ export class FastColorSampler {
     const size = robot.getScreenSize()
     this.screenWidth = size.width
     this.screenHeight = size.height
-    this.sampleStep = sampleStep // Sample every Nth pixel
+    this.sampleStep = sampleStep
+  }
+
+  captureScreen = (): ScreenData => {
+    const img = robot.screen.capture()
+    return {
+      width: img.width,
+      height: img.height,
+      data: img.image,
+    }
+  }
+
+  getAverageColorFromData = (screen: ScreenData): RGBColor => {
+    const { width, height, data } = screen
+    let rSum = 0, gSum = 0, bSum = 0, count = 0
+
+    for (let y = 0; y < height; y += this.sampleStep) {
+      for (let x = 0; x < width; x += this.sampleStep) {
+        const idx = (y * width + x) * 4
+        bSum += data[idx]
+        gSum += data[idx + 1]
+        rSum += data[idx + 2]
+        count++
+      }
+    }
+
+    if (count === 0) return { r: 0, g: 0, b: 0 }
+
+    return {
+      r: Math.round(rSum / count),
+      g: Math.round(gSum / count),
+      b: Math.round(bSum / count),
+    }
+  }
+
+  getColorAtPosition = (screen: ScreenData, normX: number, normY: number, regionSize = 0.1): RGBColor => {
+    const { width, height, data } = screen
+
+    const centerX = Math.floor(normX * width)
+    const centerY = Math.floor(normY * height)
+    const halfSize = Math.floor((regionSize * Math.min(width, height)) / 2)
+
+    const startX = Math.max(0, centerX - halfSize)
+    const startY = Math.max(0, centerY - halfSize)
+    const endX = Math.min(width, centerX + halfSize)
+    const endY = Math.min(height, centerY + halfSize)
+
+    let rSum = 0, gSum = 0, bSum = 0, count = 0
+
+    for (let y = startY; y < endY; y += 5) {
+      for (let x = startX; x < endX; x += 5) {
+        const idx = (y * width + x) * 4
+        bSum += data[idx]
+        gSum += data[idx + 1]
+        rSum += data[idx + 2]
+        count++
+      }
+    }
+
+    if (count === 0) return { r: 0, g: 0, b: 0 }
+
+    return {
+      r: Math.round(rSum / count),
+      g: Math.round(gSum / count),
+      b: Math.round(bSum / count),
+    }
   }
 
   /**

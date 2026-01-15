@@ -72,18 +72,21 @@ export class NanoleafStreamingController {
   private enableExternalControl = async () => {
     const url = `http://${this.ip}:${this.port}/api/v1/${this.authToken}/effects`
 
-    const tryVersion = async (version: ProtocolVersion) => {
-      await axios.put(url, {
+    const tryVersion = async (version: ProtocolVersion): Promise<number | null> => {
+      const response = await axios.put(url, {
         write: {
           command: "display",
           animType: "extControl",
           extControlVersion: version,
         },
       })
+      return response.data?.streamControlPort || null
     }
 
     try {
-      await tryVersion(this.protocolVersion)
+      const port = await tryVersion(this.protocolVersion)
+      if (port) this.streamPort = port
+      console.log(`    Streaming on port ${this.streamPort} (${this.protocolVersion})`)
       this.streamEnabled = true
       return
     } catch (err: any) {
@@ -91,8 +94,9 @@ export class NanoleafStreamingController {
     }
 
     this.protocolVersion = "v1"
-    this.streamPort = 60221
-    await tryVersion("v1")
+    const port = await tryVersion("v1")
+    if (port) this.streamPort = port
+    console.log(`    Streaming on port ${this.streamPort} (${this.protocolVersion})`)
     this.streamEnabled = true
   }
 
@@ -163,6 +167,25 @@ export class NanoleafStreamingController {
   }
 
   getPanels = () => this.panels
+
+  getNormalizedPanels = () => {
+    if (this.panels.length === 0) return []
+
+    const xs = this.panels.map(p => p.x)
+    const ys = this.panels.map(p => p.y)
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+    const rangeX = maxX - minX || 1
+    const rangeY = maxY - minY || 1
+
+    return this.panels.map(p => ({
+      panelId: p.panelId,
+      x: (p.x - minX) / rangeX,
+      y: 1 - (p.y - minY) / rangeY,
+    }))
+  }
 
   isStreaming = () => this.streamEnabled
 
