@@ -1,70 +1,85 @@
-import { ScreenCapture } from '../capture/ScreenCapture';
-import { ColorExtractor, RGBColor, ScreenZone } from '../color/ColorExtractor';
-import { HueController } from '../hue/HueController';
-import { NanoleafController } from '../nanoleaf/NanoleafController';
+import { DxgiCapture, RGBColor, CaptureRegion } from '../capture/DxgiCapture'
+import { HueController } from '../hue/HueController'
+import { HueStreamingController } from '../hue/HueStreamingController'
+import { NanoleafController } from '../nanoleaf/NanoleafController'
+import { NanoleafStreamingController } from '../nanoleaf/NanoleafStreamingController'
 
 export interface SyncConfig {
-  fps?: number;                    // Frames per second (default: 10)
-  brightness?: number;              // Global brightness 0-255 (default: 255)
-  colorBoost?: number;              // Saturation boost multiplier (default: 1.2)
-  zones?: ScreenZone[];             // Screen zones for multi-light setups
-  hueLightIds?: number[];           // Specific Hue lights to control
-  enableHue?: boolean;              // Enable Hue lights (default: true)
-  enableNanoleaf?: boolean;         // Enable Nanoleaf (default: true)
+  fps?: number
+  brightness?: number
+  colorBoost?: number
+  hueLightIds?: number[]
+  enableHue?: boolean
+  enableNanoleaf?: boolean
 }
 
 export interface SyncStats {
-  fps: number;
-  captureTime: number;
-  colorExtractionTime: number;
-  lightUpdateTime: number;
-  totalFrameTime: number;
+  fps: number
+  captureTime: number
+  colorExtractionTime: number
+  lightUpdateTime: number
+  totalFrameTime: number
 }
 
-/**
- * Main synchronization engine that coordinates screen capture and light updates
- */
 export class SyncEngine {
-  private screenCapture: ScreenCapture;
-  private colorExtractor: ColorExtractor;
-  private hueController?: HueController;
-  private nanoleafController?: NanoleafController;
+  private capture: DxgiCapture
+  private hueController?: HueController
+  private hueStreaming?: HueStreamingController
+  private nanoleafController?: NanoleafController
+  private nanoleafStreamers: NanoleafStreamingController[] = []
 
-  private isRunning = false;
-  private syncInterval?: NodeJS.Timeout;
-  private config: Required<SyncConfig>;
+  private isRunning = false
+  private syncInterval?: NodeJS.Timeout
+  private config: Required<SyncConfig>
 
-  // Performance tracking
-  private lastFrameTime = 0;
-  private frameCount = 0;
+  private lastFrameTime = 0
+  private frameCount = 0
   private stats: SyncStats = {
     fps: 0,
     captureTime: 0,
     colorExtractionTime: 0,
     lightUpdateTime: 0,
     totalFrameTime: 0,
-  };
+  }
 
   constructor(
     hueController?: HueController,
     nanoleafController?: NanoleafController,
     config: SyncConfig = {}
   ) {
-    this.screenCapture = new ScreenCapture();
-    this.colorExtractor = new ColorExtractor();
-    this.hueController = hueController;
-    this.nanoleafController = nanoleafController;
+    this.capture = new DxgiCapture()
+    this.hueController = hueController
+    this.nanoleafController = nanoleafController
 
-    // Set defaults
     this.config = {
-      fps: config.fps || 10,
+      fps: config.fps || 30,
       brightness: config.brightness || 255,
       colorBoost: config.colorBoost || 1.2,
-      zones: config.zones || [],
       hueLightIds: config.hueLightIds || [],
       enableHue: config.enableHue !== false,
       enableNanoleaf: config.enableNanoleaf !== false,
-    };
+    }
+  }
+
+  initCapture = async () => {
+    await this.capture.initialize()
+  }
+
+  async initNanoleafStreaming(ip: string, authToken: string): Promise<void> {
+    const streamer = new NanoleafStreamingController(ip, authToken)
+    await streamer.initialize()
+    this.nanoleafStreamers.push(streamer)
+  }
+
+  async initHueStreaming(bridgeIp: string, username: string, clientKey: string, groupId?: string, enableAllLights = true): Promise<void> {
+    this.hueStreaming = new HueStreamingController({
+      bridgeIp,
+      username,
+      clientKey,
+      entertainmentGroupId: groupId,
+      enableAllLights,
+    })
+    await this.hueStreaming.initialize()
   }
 
   /**
@@ -114,106 +129,130 @@ export class SyncEngine {
     }, 5000);
   }
 
-  /**
-   * Stop the synchronization loop
-   */
   stop(): void {
     if (!this.isRunning) {
-      console.log('⚠ Sync engine is not running');
-      return;
+      console.log('⚠ Sync engine is not running')
+      return
     }
 
-    console.log('\n🛑 Stopping screen-light synchronization...');
+    console.log('\n🛑 Stopping screen-light synchronization...')
 
     if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-      this.syncInterval = undefined;
+      clearInterval(this.syncInterval)
+      this.syncInterval = undefined
     }
 
-    this.isRunning = false;
+    this.capture.cleanup()
+    this.isRunning = false
   }
 
-  /**
-   * Synchronize one frame
-   */
   private async syncFrame(): Promise<void> {
-    const frameStart = Date.now();
+    const frameStart = Date.now()
 
     try {
-      // 1. Capture screen
-      const captureStart = Date.now();
-      const screenshot = await this.screenCapture.capture({ format: 'jpg' });
-      const captureTime = Date.now() - captureStart;
+      const captureStart = Date.now()
 
-      // 2. Extract color
-      const colorStart = Date.now();
-      let color: RGBColor;
+      // Build regions for Hue entertainment lights (DTLS)
+      const huePositions = this.hueStreaming?.getNormalizedPositions() || []
+      const hueRegions: CaptureRegion[] = huePositions.map(p => ({ x: p.x, y: p.y, size: 0.15 }))
 
-      if (this.config.zones.length > 0) {
-        // Multi-zone mode: Use first zone for now
-        // TODO: Implement per-light zone mapping
-        const zoneColors = await this.colorExtractor.getZoneColors(screenshot, this.config.zones);
-        color = zoneColors[0]?.color || { r: 0, g: 0, b: 0 };
-      } else {
-        // Full screen average
-        color = await this.colorExtractor.getAverageColor(screenshot);
+      // Build regions for Hue REST lights (non-entertainment)
+      const restPositions = this.hueStreaming?.getRestLightPositions() || []
+      const restRegions: CaptureRegion[] = restPositions.map(p => ({ x: p.x, y: p.y, size: 0.15 }))
+
+      // Build regions for Nanoleaf panels
+      const nanoleafRegions: CaptureRegion[] = []
+      const streamerPanelCounts: number[] = []
+
+      for (const streamer of this.nanoleafStreamers) {
+        if (!streamer.isStreaming()) continue
+        const panels = streamer.getNormalizedPanels()
+        streamerPanelCounts.push(panels.length)
+        for (const panel of panels) {
+          nanoleafRegions.push({ x: panel.x, y: panel.y, size: 0.08 })
+        }
       }
 
-      // Enhance the color
-      color = this.colorExtractor.enhanceColor(color, this.config.colorBoost);
+      // Capture all regions in one call
+      const allRegions = [...hueRegions, ...restRegions, ...nanoleafRegions]
+      const colors = await this.capture.captureRegions(allRegions)
+      const captureTime = Date.now() - captureStart
 
-      const colorTime = Date.now() - colorStart;
+      const colorStart = Date.now()
+      const enhanced = colors.map(c => this.enhanceColor(c, this.config.colorBoost))
+      const hueColors = enhanced.slice(0, huePositions.length)
+      const restColors = enhanced.slice(huePositions.length, huePositions.length + restPositions.length)
+      const nanoleafColors = enhanced.slice(huePositions.length + restPositions.length)
+      const colorTime = Date.now() - colorStart
 
-      // 3. Update lights
-      const lightStart = Date.now();
-      await this.updateLights(color);
-      const lightTime = Date.now() - lightStart;
+      const lightStart = Date.now()
+      await this.updateLights(hueColors, huePositions, restColors, restPositions, nanoleafColors, streamerPanelCounts)
+      const lightTime = Date.now() - lightStart
 
-      // Update stats
-      const totalTime = Date.now() - frameStart;
-      this.updateStats(captureTime, colorTime, lightTime, totalTime);
-
+      const totalTime = Date.now() - frameStart
+      this.updateStats(captureTime, colorTime, lightTime, totalTime)
     } catch (error: any) {
-      console.error('Error in sync frame:', error.message);
+      console.error('Error in sync frame:', error.message)
     }
   }
 
-  /**
-   * Update all connected lights
-   */
-  private async updateLights(color: RGBColor): Promise<void> {
-    const promises: Promise<any>[] = [];
+  private enhanceColor = (color: RGBColor, boost: number): RGBColor => {
+    const max = Math.max(color.r, color.g, color.b)
+    const min = Math.min(color.r, color.g, color.b)
+    if (max === min) return color
 
-    // Update Hue lights
-    if (this.config.enableHue && this.hueController) {
-      if (this.config.hueLightIds.length > 0) {
-        // Update specific lights
-        const lightColors = new Map<number, RGBColor>();
-        for (const lightId of this.config.hueLightIds) {
-          lightColors.set(lightId, color);
+    const mid = (max + min) / 2
+    return {
+      r: Math.min(255, Math.max(0, Math.round(mid + (color.r - mid) * boost))),
+      g: Math.min(255, Math.max(0, Math.round(mid + (color.g - mid) * boost))),
+      b: Math.min(255, Math.max(0, Math.round(mid + (color.b - mid) * boost))),
+    }
+  }
+
+  private async updateLights(
+    hueColors: RGBColor[],
+    huePositions: Array<{ id: string, x: number, y: number }>,
+    restColors: RGBColor[],
+    restPositions: Array<{ id: string, x: number, y: number }>,
+    nanoleafColors: RGBColor[],
+    streamerPanelCounts: number[]
+  ): Promise<void> {
+    // Send per-light colors to Hue entertainment lights (DTLS)
+    if (this.config.enableHue && this.hueStreaming?.isStreaming()) {
+      const lightColors = new Map<string, RGBColor>()
+      huePositions.forEach((pos, i) => {
+        lightColors.set(pos.id, hueColors[i] || { r: 0, g: 0, b: 0 })
+      })
+      this.hueStreaming.streamLightColors(lightColors)
+    }
+
+    // Update Hue REST lights (non-entertainment, rate-limited)
+    if (this.config.enableHue && this.hueStreaming?.hasRestLights()) {
+      const restLightColors = new Map<string, RGBColor>()
+      restPositions.forEach((pos, i) => {
+        restLightColors.set(pos.id, restColors[i] || { r: 0, g: 0, b: 0 })
+      })
+      this.hueStreaming.updateRestLights(restLightColors)
+    }
+
+    // Distribute colors to Nanoleaf streamers
+    if (this.config.enableNanoleaf) {
+      let colorIdx = 0
+
+      for (const streamer of this.nanoleafStreamers) {
+        if (!streamer.isStreaming()) continue
+
+        const panels = streamer.getNormalizedPanels()
+        const panelColors = new Map<number, RGBColor>()
+
+        for (const panel of panels) {
+          panelColors.set(panel.panelId, nanoleafColors[colorIdx] || { r: 0, g: 0, b: 0 })
+          colorIdx++
         }
-        promises.push(
-          this.hueController.setMultipleLights(lightColors, this.config.brightness)
-        );
-      } else {
-        // Update all lights
-        const lights = await this.hueController.getLights();
-        const lightColors = new Map<number, RGBColor>();
-        for (const light of lights) {
-          lightColors.set(light.id, color);
-        }
-        promises.push(
-          this.hueController.setMultipleLights(lightColors, this.config.brightness)
-        );
+
+        streamer.streamPanelColors(panelColors)
       }
     }
-
-    // Update Nanoleaf
-    if (this.config.enableNanoleaf && this.nanoleafController) {
-      promises.push(this.nanoleafController.setSolidColor(color));
-    }
-
-    await Promise.all(promises);
   }
 
   /**
