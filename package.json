@@ -29,6 +29,7 @@
     "node-screenshots": "^0.2.1",
     "phea": "^1.0.6",
     "robotjs": "^0.6.0",
+    "screenshot-desktop": "^1.15.3",
     "sharp": "^0.33.0",
     "windows-desktop-duplication": "^1.0.3"
   },

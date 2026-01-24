@@ -71,17 +71,18 @@ async function testHue() {
     }
 
     try {
-      username = await hueController.createUser(bridgeIp);
+      const credentials = await hueController.createUser(bridgeIp)
+      username = credentials.username
 
-      // Save credentials
       await configManager.update({
         hue: {
           bridgeIp,
-          username,
+          username: credentials.username,
+          clientKey: credentials.clientKey,
           lightIds: [],
           entertainmentAreaId: null,
         },
-      });
+      })
 
       console.log('\n✓ Credentials saved to config.json\n');
     } catch (error: any) {

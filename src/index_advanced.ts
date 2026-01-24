@@ -82,12 +82,12 @@ async function runAdvancedSetupWizard(configManager: ConfigManager): Promise<voi
       const bridgeIp = bridges[0].ipaddress;
       console.log(`\nUsing bridge: ${bridgeIp}`);
 
-      const username = await hueController.createUser(bridgeIp);
-      config.hue.bridgeIp = bridgeIp;
-      config.hue.username = username;
+      const { username, clientKey } = await hueController.createUser(bridgeIp)
+      config.hue.bridgeIp = bridgeIp
+      config.hue.username = username
+      config.hue.clientKey = clientKey
 
-      // Connect and list lights
-      await hueController.connect(bridgeIp, username);
+      await hueController.connect(bridgeIp, username)
       const allLights = await hueController.getLights();
       console.log(`\n📋 Found ${allLights.length} total lights:`);
       allLights.forEach(light => {
