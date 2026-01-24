@@ -1,5 +1,4 @@
 import { dtls } from "node-dtls-client"
-import axios from "axios"
 
 export interface RGBColor {
   r: number
@@ -74,10 +73,22 @@ export class HueStreamingController {
 
     console.log(`  Hue Entertainment: ${group.name} (${this.lightIds.length} lights)`)
 
-    await this.resetEntertainmentMode()
-    await this.createDtlsSocket()
-
-    console.log(`  ✓ Hue DTLS streaming ready`)
+    // DTLS with retry
+    const maxRetries = 3
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.resetEntertainmentMode()
+        await this.createDtlsSocket()
+        console.log(`  ✓ Hue DTLS streaming ready`)
+        break
+      } catch (err: any) {
+        if (attempt === maxRetries) {
+          throw new Error(`DTLS failed after ${maxRetries} attempts: ${err.message}`)
+        }
+        console.log(`  ⚠ DTLS attempt ${attempt} failed, retrying...`)
+        await new Promise(r => setTimeout(r, 1000))
+      }
+    }
 
     if (this.config.enableAllLights) {
       await this.initRestLights()
@@ -86,10 +97,11 @@ export class HueStreamingController {
 
   private initRestLights = async () => {
     const url = `http://${this.config.bridgeIp}/api/${this.config.username}/lights`
-    const response = await axios.get(url)
+    const response = await fetch(url)
+    const data = await response.json()
 
     const entertainmentSet = new Set(this.lightIds)
-    const allLights = Object.entries(response.data) as [string, any][]
+    const allLights = Object.entries(data) as [string, any][]
 
     this.restLights = allLights
       .filter(([id]) => !entertainmentSet.has(id))
@@ -110,9 +122,10 @@ export class HueStreamingController {
 
   private getEntertainmentGroups = async () => {
     const url = `http://${this.config.bridgeIp}/api/${this.config.username}/groups`
-    const response = await axios.get(url)
+    const response = await fetch(url)
+    const data = await response.json()
 
-    return Object.entries(response.data)
+    return Object.entries(data)
       .filter(([_, g]: [string, any]) => g.type === "Entertainment")
       .map(([id, g]: [string, any]) => ({
         id,
@@ -124,9 +137,9 @@ export class HueStreamingController {
 
   private resetEntertainmentMode = async () => {
     const url = `http://${this.config.bridgeIp}/api/${this.config.username}/groups/${this.groupId}`
-    await axios.put(url, { stream: { active: false } }).catch(() => {})
+    await fetch(url, { method: 'PUT', body: JSON.stringify({ stream: { active: false } }) }).catch(() => {})
     await new Promise(r => setTimeout(r, 500))
-    await axios.put(url, { stream: { active: true } })
+    await fetch(url, { method: 'PUT', body: JSON.stringify({ stream: { active: true } }) })
     await new Promise(r => setTimeout(r, 500))
   }
 
@@ -237,16 +250,12 @@ export class HueStreamingController {
 
     const url = `http://${this.config.bridgeIp}/api/${this.config.username}/lights/${light.id}/state`
 
-    try {
-      if (light.supportsColor) {
-        const [h, s, b] = this.rgbToHsb(color)
-        axios.put(url, { on: true, hue: h, sat: s, bri: b, transitiontime: 2 }, { timeout: 1000 })
-      } else {
-        const bri = Math.round(0.299 * color.r + 0.587 * color.g + 0.114 * color.b)
-        axios.put(url, { on: true, bri: Math.max(1, bri), transitiontime: 2 }, { timeout: 1000 })
-      }
-    } catch {
-      // Ignore errors to prevent blocking
+    if (light.supportsColor) {
+      const [h, s, b] = this.rgbToHsb(color)
+      fetch(url, { method: 'PUT', body: JSON.stringify({ on: true, hue: h, sat: s, bri: b, transitiontime: 2 }) }).catch(() => {})
+    } else {
+      const bri = Math.round(0.299 * color.r + 0.587 * color.g + 0.114 * color.b)
+      fetch(url, { method: 'PUT', body: JSON.stringify({ on: true, bri: Math.max(1, bri), transitiontime: 2 }) }).catch(() => {})
     }
   }
 
@@ -281,7 +290,7 @@ export class HueStreamingController {
     }
 
     const url = `http://${this.config.bridgeIp}/api/${this.config.username}/groups/${this.groupId}`
-    await axios.put(url, { stream: { active: false } }).catch(() => {})
+    await fetch(url, { method: 'PUT', body: JSON.stringify({ stream: { active: false } }) }).catch(() => {})
 
     this.streamEnabled = false
   }

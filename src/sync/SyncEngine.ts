@@ -115,6 +115,14 @@ export class SyncEngine {
     this.isRunning = true;
     this.lastFrameTime = Date.now();
 
+    // Warmup: run a few captures to stabilize
+    console.log('⏳ Warming up...')
+    for (let i = 0; i < 5; i++) {
+      await this.syncFrame()
+      await new Promise(r => setTimeout(r, 100))
+    }
+    console.log('✓ Warmup complete\n')
+
     const intervalMs = 1000 / this.config.fps;
 
     this.syncInterval = setInterval(async () => {

@@ -28,14 +28,26 @@ export class DxgiCapture {
   private sampleStep = 8
 
   initialize = async (): Promise<void> => {
-    this.dd = new DesktopDuplication(0)
-    this.dd.initialize()
+    const maxRetries = 3
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        this.dd = new DesktopDuplication(0)
+        this.dd.initialize()
 
-    const frame = this.dd.getFrame()
-    this.width = frame.width
-    this.height = frame.height
+        const frame = this.dd.getFrame()
+        this.width = frame.width
+        this.height = frame.height
 
-    console.log(`  ✓ DXGI capture ready (${this.width}x${this.height})`)
+        console.log(`  ✓ DXGI capture ready (${this.width}x${this.height})`)
+        return
+      } catch (err: any) {
+        if (attempt === maxRetries) {
+          throw new Error(`DXGI init failed after ${maxRetries} attempts: ${err.message}`)
+        }
+        console.log(`  ⚠ DXGI attempt ${attempt} failed, retrying...`)
+        await new Promise(r => setTimeout(r, 1000))
+      }
+    }
   }
 
   setSampleStep = (step: number) => {
